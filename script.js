@@ -149,6 +149,32 @@ function computeVelocity(gradients, parameters) {
   return total;
 }
 
+// Normalize an angle to the range [-Math.PI, Math.PI).
+var PI = Math.PI;
+var TWO_PI = 2 * PI;
+function normalizeAngle(angle) {
+  return ((angle + PI) % TWO_PI + TWO_PI) % TWO_PI - PI;
+}
+
+// Compute deltas which would cause the arm to smooth out.
+function computeSmoothingDeltas(arm) {
+  if (arm == null) return [];
+  if (arm.child == null) return [0];
+  var deltas = [normalizeAngle(arm.child.angle)];
+  while (arm.child != null) {
+    arm = arm.child;
+    // Smooth out relative to parent.
+    var selfCorrection = normalizeAngle(-arm.angle);
+    if (arm.child == null) {
+      deltas.push(selfCorrection);
+    } else {
+      var childCorrection = normalizeAngle(arm.child.angle);
+      deltas.push(normalizeAngle(selfCorrection + 0.2 * childCorrection));
+    }
+  }
+  return deltas;
+}
+
 // Apply an array of angular deltas to an arm.
 function applyControls(arm, deltas) {
   for (var i = 0, n = deltas.length; i < n; i++) {
@@ -162,50 +188,48 @@ function applyControls(arm, deltas) {
 // Given an arm and a target offset, adjust the velocities of the components of
 // the arm so that its head will be at the head position. This will iterate to
 // improve precision until the head is within the given max range.
-function moveArm(arm, target, maxRange, maxIterations) {
-  var headPosition = arm.headPosition();
-  var distance = headPosition.sub(target).length();
-  var iterations = 0;
-  while (distance > maxRange && iterations++ < maxIterations) {
+function moveArm(arm, target, acceptableRange, maxIterations) {
+  for (var iterations = 0; iterations < maxIterations; iterations++) {
+    if (target.sub(arm.headPosition()).length() < acceptableRange) break;
     // Compute the adjustments necessary to move in the right direction.
     var jacobian = gradients(arm);
     var parameters = computeParameters(jacobian, target);
     // Apply an exponential backoff so that bones nearer the head move more
     // freely.
-    parameters = parameters.map((x, i) => x * Math.pow(1.05, i));
+    parameters = parameters.map((x, i) => x * Math.pow(1.1, i));
     // Adjust the rate of movement so that it is slow enough to meet the
     // requirements.
     var headVelocity = computeVelocity(jacobian, parameters);
     var speedFactor = 0.1 / headVelocity.length();
     // Update the arm state and recompute the termination condition parameters.
     applyControls(arm, parameters.map(x => x * speedFactor));
-    headPosition = arm.headPosition();
-    distance = headPosition.sub(target).length();
   }
-  if (distance < maxRange) {
-    console.log("Converged in %d iterations.", iterations);
-  } else {
-    console.error("Did not converge.");
-  }
+}
+
+function smoothArm(arm) {
+  // Compute deltas which will smooth out the snake.
+  applyControls(arm, computeSmoothingDeltas(arm).map(x => x * 0.1));
 }
 
 var arm = null;
-var maxBoneLength = 10;
-var minBoneLength = 2;
-var numBones = 100;
+var maxBoneLength = 15;
+var minBoneLength = 10;
+var numBones = 50;
 for (var i = 0; i < numBones; i++) {
   var length = minBoneLength + (maxBoneLength - minBoneLength) * i / numBones;
   arm = new Arm(length, arm);
+  arm.angle = 4 * Math.PI / numBones;
 }
-var offset = new Vector(50, 50);
+var offset = arm.headPosition();
 
 function updateArm() {
   var center = new Vector(canvas.width / 2, canvas.height / 2);
-  moveArm(arm, offset, 3, 100);
+  smoothArm(arm);
+  moveArm(arm, offset, 3, 1000);
   context.clearRect(0, 0, canvas.width, canvas.height);
   arm.draw(context, Transform.translation(center));
 }
-setInterval(updateArm, 50);
+setInterval(updateArm, 20);
 
 canvas.addEventListener("mousemove", function(event) {
   var center = new Vector(canvas.width / 2, canvas.height / 2);
